@@ -11,8 +11,8 @@ import requests
 app = Flask(__name__)
 
 # ====== LINE ENV ======
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("l4IOYPa0HbfqOlwGVI0SZPchUyQ38RtBWiV+ahufQLVUC1R2NkJ1mGEyyo1cmEGKiMTTOlMWkc1WAYbuOcUkRVmkXA/ljBnOStgOGy/DOADUPSocUFWGE2rvQoFxOl16zYdGFrP7ZQ+A427B/7/eVQdB04t89/1O/w1cDnyilFU=")
-LINE_CHANNEL_SECRET = os.getenv("97c6b5894f89ae844332d532ef07777d")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -101,3 +101,4 @@ def handle_message(event):
 # ====== RUN ======
 if __name__ == "__main__":
     app.run()
+
