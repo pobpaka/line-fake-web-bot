@@ -1,48 +1,89 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage
-)
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from urllib.parse import urlparse
 import os
 import re
-import requests
 
 app = Flask(__name__)
 
-# ====== LINE ENV ======
+# ================= ENV =================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+
+if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
+    raise ValueError("Missing LINE environment variables")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ====== ฟังก์ชันเช็กว่าเป็น URL ไหม ======
-def is_url(text):
-    url_pattern = re.compile(
-        r'^(https?:\/\/)?([\w\-]+\.)+[\w\-]+(\/[\w\-._~:/?#[\]@!$&\'()*+,;=]*)?$'
-    )
-    return re.match(url_pattern, text)
+# ================= URL CHECK =================
+URL_REGEX = re.compile(
+    r'(https?://[^\s]+)',
+    re.IGNORECASE
+)
 
-# ====== ฟังก์ชันตรวจเว็บปลอม (ตัวอย่างง่าย) ======
-def check_website(url):
-    # blacklist ตัวอย่าง (คุณเพิ่มเองได้)
-    blacklist = [
-        "free-money",
-        "login-facebook",
-        "secure-update",
-        "bit.ly",
-        "tinyurl"
-    ]
+RISK_TLDS = ["xyz", "top", "click", "live", "loan", "vip"]
+SCAM_WORDS = [
+    "เครดิตฟรี", "free", "bonus", "slot", "casino",
+    "login", "verify", "wallet", "update", "secure"
+]
 
-    for bad in blacklist:
-        if bad in url.lower():
-            return "danger"
+def extract_url(text):
+    match = URL_REGEX.search(text)
+    return match.group(1) if match else None
 
-    return "safe"
+def analyze_url(url):
+    score = 0
+    reasons = []
 
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
 
-# ====== webhook ======
+    # root domain
+    parts = domain.split(".")
+    root_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
+
+    # 1. many dots
+    if domain.count(".") >= 3:
+        score += 1
+        reasons.append("โดเมนมีหลายชั้นผิดปกติ")
+
+    # 2. risky tld
+    if root_domain.split(".")[-1] in RISK_TLDS:
+        score += 2
+        reasons.append("ใช้โดเมนระดับบนที่พบในเว็บหลอกลวงบ่อย")
+
+    # 3. scam words in domain/path
+    for w in SCAM_WORDS:
+        if w in domain or w in path:
+            score += 1
+            reasons.append(f"พบคำชวนเชื่อ: {w}")
+            break
+
+    # 4. very long url
+    if len(url) > 80:
+        score += 1
+        reasons.append("URL ยาวผิดปกติ")
+
+    # 5. suspicious symbols
+    if "-" in domain or "_" in domain:
+        score += 1
+        reasons.append("โดเมนมีสัญลักษณ์ที่ใช้ในเว็บปลอมบ่อย")
+
+    # decision
+    if score >= 4:
+        level = "❌ เสี่ยงสูง (เข้าข่ายหลอกลวง)"
+    elif score >= 2:
+        level = "⚠️ น่าสงสัย (ควรระวัง)"
+    else:
+        level = "✅ ยังไม่พบความเสี่ยงชัดเจน"
+
+    return level, reasons, root_domain
+
+# ================= WEBHOOK =================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -55,50 +96,36 @@ def callback():
 
     return "OK"
 
-
-# ====== รับข้อความจากผู้ใช้ ======
+# ================= MESSAGE =================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_text = event.message.text.strip()
+    text = event.message.text
+    url = extract_url(text)
 
-    # ถ้าไม่ใช่ลิงก์
-    if not is_url(user_text):
-        reply_text = (
-            "👋 สวัสดีครับ\n\n"
-            "🔎 ผมคือบอทตรวจสอบเว็บปลอม\n"
-            "กรุณาส่ง *ลิงก์เว็บไซต์* มาเพื่อตรวจสอบ\n\n"
-            "⚠️ ระวังเว็บหลอกลวง"
-        )
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
-        return
-
-    # ถ้าเป็นลิงก์ → ตรวจสอบ
-    status = check_website(user_text)
-
-    if status == "safe":
-        reply_text = (
-            "✅ ผลการตรวจสอบ\n\n"
-            "เว็บไซต์นี้ *ยังไม่พบรายงานว่าเป็นเว็บปลอม*\n\n"
-            "ℹ️ แนะนำ: ตรวจสอบ URL และชื่อโดเมนทุกครั้ง"
+    if not url:
+        reply = (
+            "👋 ส่งลิงก์มาได้เลย\n"
+            "ผมจะช่วยตรวจสอบความเสี่ยงให้ 🔍"
         )
     else:
-        reply_text = (
-            "❌ คำเตือน!\n\n"
-            "เว็บไซต์นี้ *มีความเสี่ยงสูง*\n"
-            "อาจเป็นเว็บปลอมหรือเว็บหลอกลวง\n\n"
-            "🚫 ห้ามกรอกข้อมูลส่วนตัวเด็ดขาด"
-        )
+        level, reasons, root = analyze_url(url)
+
+        reply = f"🔍 ผลการตรวจสอบลิงก์\n\n"
+        reply += f"🌐 โดเมนหลัก: {root}\n"
+        reply += f"{level}\n\n"
+
+        if reasons:
+            reply += "📌 เหตุผลที่พบ:\n"
+            for r in reasons:
+                reply += f"• {r}\n"
+
+        reply += "\n⚠️ คำแนะนำ:\n"
+        reply += "อย่ากรอกข้อมูลส่วนตัว / รหัสผ่าน / OTP\n"
 
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=reply_text)
+        TextSendMessage(text=reply)
     )
 
-
-# ====== RUN ======
 if __name__ == "__main__":
     app.run()
-
